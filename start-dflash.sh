@@ -102,6 +102,7 @@ ensure_cached() {
     docker run --rm --network host \
       -e HF_HOME=/root/.cache/huggingface \
       -e HF_TOKEN="${HF_TOKEN:-}" \
+      -e HF_ENDPOINT="${HF_ENDPOINT:-}" \
       -v "${SCRIPT_DIR}/.cache/huggingface:/root/.cache/huggingface" \
       "${IMAGE}" \
       python3 -c "from huggingface_hub import snapshot_download; snapshot_download('${repo}'${DRAFT_REVISION:+, revision='${DRAFT_REVISION}'})" \

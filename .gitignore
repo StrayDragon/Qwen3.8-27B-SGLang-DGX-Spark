@@ -15,6 +15,16 @@
 # DFlash2 path (2026-08-19): serving script (the image is pulled from
 # Docker Hub since 2026-09-05; the patch/ builder lives at commit 751e29e)
 !start-dflash.sh
+# Concurrency-capped DFLASH wrappers (3c / 1c) — thin DF_EXTRA layers
+# over start-dflash.sh for the fork's 3-concurrency and single-stream use.
+!start-dflash-3c.sh
+!start-dflash-1c.sh
+# Chat template overrides for start.sh's CHAT_TEMPLATE knob
+!templates/
+!templates/*.jinja
+!templates/README.md
+# Fork-specific notes (upstream README/CHANGELOG stay untouched to avoid conflicts)
+!FORK.l8ng.md
 # Decision records and plans, per file — analysis write-ups stay untracked
 !docs/
 !docs/brainstorms/

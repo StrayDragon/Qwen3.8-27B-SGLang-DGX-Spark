@@ -47,6 +47,15 @@ set -euo pipefail
 #         different JSON shape and would never parse). SGLang needs
 #         no vLLM-style --enable-auto-tool-choice; just send `tools`
 #         in the request.
+#       * Chat template: the fork default is the froggeric v22
+#         override (templates/qwen3.8-froggeric-v22.jinja), which
+#         covers the stock template's reachable per-request 500s
+#         (reasoning_effort outside xhigh|medium|low, mid-history
+#         system messages, no-user histories); plain-chat rendering
+#         is byte-identical to stock. CHAT_TEMPLATE=stock serves the
+#         checkpoint's own template instead; any other .jinja in
+#         templates/ (or an absolute path) overrides. See
+#         templates/README.md.
 #   - Speed: speculative decoding via the checkpoint's own MTP head
 #     (the cookbook's DGX Spark cell, EAGLE 3 steps / topk 1 /
 #     4 draft tokens). Measured on this box, single stream, 400 tok
@@ -156,6 +165,14 @@ CHUNKED_PREFILL="${CHUNKED_PREFILL:-8192}"
 # 1 = set SGLANG_OPT_MAMBA_SKIP_DECODE_LOCK in the container (frees one
 # GDN state slot per running request; S 4 -> 3). 0 = stock locking.
 MAMBA_SKIP_DECODE_LOCK="${MAMBA_SKIP_DECODE_LOCK:-0}"
+# Chat template: the fork default is the froggeric v22 override shipped
+# in templates/ — covers the stock template's reachable per-request 500s
+# (see templates/README.md); plain-chat rendering is byte-identical.
+# CHAT_TEMPLATE=stock serves the checkpoint's own chat_template.jinja
+# (byte-identical to the official Qwen3.8-27B one); any other .jinja
+# file name resolved against templates/ (or an absolute path) overrides.
+#   CHAT_TEMPLATE=stock ./start.sh
+CHAT_TEMPLATE="${CHAT_TEMPLATE:-qwen3.8-froggeric-v22.jinja}"
 # Pin the container to GB10's 10 Cortex-X5 cores (5-9, 15-19; the A725
 # efficiency cores are 0-4, 10-14). Keeps scheduler/tokenizer Python off
 # the 2.8GHz little cores. Empty = no pinning.
@@ -221,6 +238,27 @@ else
   YARN_SUFFIX=""
 fi
 
+# Chat template override: resolve to a host path, mount it read-only at a
+# fixed container path, and pass --chat-template BEFORE EXTRA_ARGS so the
+# free-form hatch keeps last-wins override rights. The mount can only be
+# added here in the docker run — EXTRA_ARGS feeds server flags only, which
+# is why start-dspark.sh/start-dflash.sh inherit this via exec start.sh.
+# The sentinel value "stock" opts out entirely (checkpoint built-in).
+CHAT_TEMPLATE_DOCKER_ARGS=()
+CHAT_TEMPLATE_ARGS=()
+if [[ "${CHAT_TEMPLATE}" != "stock" ]]; then
+  case "${CHAT_TEMPLATE}" in
+    /*) TEMPLATE_HOST_PATH="${CHAT_TEMPLATE}" ;;
+    *)  TEMPLATE_HOST_PATH="${SCRIPT_DIR}/templates/${CHAT_TEMPLATE}" ;;
+  esac
+  [[ -f "${TEMPLATE_HOST_PATH}" ]] || {
+    echo "CHAT_TEMPLATE '${CHAT_TEMPLATE}' not found (looked for ${TEMPLATE_HOST_PATH}; drop the .jinja into templates/, pass an absolute path, or set CHAT_TEMPLATE=stock for the checkpoint's own)"
+    exit 1
+  }
+  CHAT_TEMPLATE_DOCKER_ARGS=(-v "${TEMPLATE_HOST_PATH}:/templates/chat_template.jinja:ro")
+  CHAT_TEMPLATE_ARGS=(--chat-template /templates/chat_template.jinja)
+fi
+
 
 # GDN state pool: slots = concurrency x S; S=4 for extra_buffer_lazy +
 # overlap scheduler, 3 with MAMBA_SKIP_DECODE_LOCK=1. Speculative verify
@@ -277,6 +315,7 @@ echo "Starting SGLang container for ${MODEL_ID} (${QUANT})"
 echo "Context: ${CONTEXT_LENGTH} tokens${YARN_SUFFIX:-}"
 echo "Max concurrent requests: ${MAX_CONCURRENT_REQUESTS} (mamba pool ${MAMBA_CACHE_SIZE} slots)"
 echo "Spec decode: MTP steps=${SPEC_STEPS} topk=${SPEC_TOPK} draft=${SPEC_DRAFT}"
+echo "Chat template: ${CHAT_TEMPLATE}"
 echo "Image: ${IMAGE}"
 echo "Served model name: ${SERVED_MODEL_NAME}"
 echo "Listening on ${HOST}:${PORT}"
@@ -303,10 +342,12 @@ docker run -d \
   -e TRITON_CACHE_DIR=/root/.triton \
   -e SGLANG_OPT_MAMBA_SKIP_DECODE_LOCK="${MAMBA_SKIP_DECODE_LOCK}" \
   -e HF_TOKEN="${HF_TOKEN:-}" \
+  -e HF_ENDPOINT="${HF_ENDPOINT:-}" \
   "${DOCKER_ENV_ARGS[@]}" \
   "${ALLOW_LONGER_ARGS[@]}" \
   -v "${HF_HOME}:/root/.cache/huggingface" \
   -v "${TRITON_CACHE_DIR}:/root/.triton" \
+  "${CHAT_TEMPLATE_DOCKER_ARGS[@]}" \
   "${IMAGE}" \
   python3 -m sglang.launch_server \
   --model-path "${MODEL_ID}" \
@@ -330,6 +371,7 @@ docker run -d \
   --speculative-num-draft-tokens "${SPEC_DRAFT}" \
   --reasoning-parser qwen3 \
   --tool-call-parser qwen3_coder \
+  "${CHAT_TEMPLATE_ARGS[@]}" \
   --sampling-defaults model \
   --enable-metrics \
   --enable-cache-report \
